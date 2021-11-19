@@ -11,29 +11,110 @@ Globals:
     Timeout: 3
 
 Resources:
-  HelloWorldFunction:
-    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+  ResolveTodoFunction:
+    Type: AWS::Serverless::Function 
     Properties:
-      CodeUri: hello_world/
+      CodeUri: functions/resolveTodo
       Handler: app.lambda_handler
       Runtime: python3.8
-      Events:
-        HelloWorld:
-          Type: Api # More info about API Event Source: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#api
-          Properties:
-            Path: /hello
-            Method: get
+      Environment:
+        Variables:
+          DATA_TABLE: !Ref TodoDB
+      Policies: 
+        - DynamoDBWritePolicy:
+              TableName: !Ref TodoDB
+        - DynamoDBReadPolicy:
+              TableName: !Ref TodoDB
 
-Outputs:
-  # ServerlessRestApi is an implicit API created out of Events key under Serverless::Function
-  # Find out more about other implicit resources you can reference within SAM
-  # https://github.com/awslabs/serverless-application-model/blob/master/docs/internals/generated_resources.rst#api
-  HelloWorldApi:
-    Description: "API Gateway endpoint URL for Prod stage for Hello World function"
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/hello/"
-  HelloWorldFunction:
-    Description: "Hello World Lambda Function ARN"
-    Value: !GetAtt HelloWorldFunction.Arn
-  HelloWorldFunctionIamRole:
-    Description: "Implicit IAM Role created for Hello World function"
-    Value: !GetAtt HelloWorldFunctionRole.Arn
+  TodoDB:
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      AttributeDefinitions: 
+        - AttributeName: id
+          AttributeType: S
+      KeySchema: 
+        - AttributeName: id
+          KeyType: HASH
+      ProvisionedThroughput: 
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1  
+  
+  TodoApi:
+    Type: "AWS::AppSync::GraphQLApi"
+    Description: "The GraphQL API "
+    Properties:
+      AuthenticationType: "AWS_IAM"
+      Name: "Todo-API"
+
+  TodoApiSchema:
+    Type: "AWS::AppSync::GraphQLSchema"
+    Properties:
+      ApiId: !GetAtt TodoApi.ApiId
+      DefinitionS3Location: schema.graphql
+  
+  ToDoResovlerStoreSource:
+    Type: "AWS::AppSync::DataSource"
+    Properties:
+      Name: TodoResolverDataSource
+      ApiId: !GetAtt TodoApi.ApiId
+      Description: ""
+      ServiceRoleArn: !GetAtt ToDoResovlerRole.Arn
+      Type: AWS_LAMBDA
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt ResolveTodoFunction.Arn
+
+  CreateTodoResolver:
+    Type: "AWS::AppSync::Resolver"
+    DependsOn: TodoApiSchema
+    Properties:
+      ApiId: !GetAtt TodoApi.ApiId
+      TypeName: Mutation
+      FieldName: createTodo
+      DataSourceName: !GetAtt ToDoResovlerStoreSource.Name
+      RequestMappingTemplateS3Location: graphql/createTodo.request
+      ResponseMappingTemplateS3Location: graphql/createTodo.response
+  
+  AppSyncServiceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - appsync.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+
+  ToDoResovlerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - Ref: AppSyncDynamoDBPolicy
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - appsync.amazonaws.com
+    DependsOn:
+      - AppSyncDynamoDBPolicy
+  
+  AppSyncDynamoDBPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Path: /appsync/
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - lambda:invokeFunction
+            Resource: [ 
+              !Join [ "", [ !GetAtt ResolveTodoFunction.Arn, "*" ] ],
+            ]
+
